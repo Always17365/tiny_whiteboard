@@ -65,10 +65,13 @@ let isMousedown = false;
 const currentType = ref("selection");
 // 当前是否正在调整元素
 let isAdjustmentElement = false;
+// 当前按住了激活元素激活态的哪个区域
+let hitActiveElementArea = "";
 // 检测是否击中了某个元素
 const checkIsHitElement = (x, y) => {
   let hitElement = null;
-  for (let i = 0; i < allElements.length; i++) {
+  // 从后往前遍历元素，即默认认为新的元素在更上层
+  for (let i = allElements.length - 1; i >= 0; i--) {
     if (allElements[i].isHit(x, y)) {
       hitElement = allElements[i];
       break;
@@ -96,11 +99,12 @@ const onMousedown = (e) => {
     // 选择模式下进行元素激活检测
     if (activeElement) {
       // 当前存在激活元素则判断是否按住了激活状态的某个区域
-      let hitActiveArea = activeElement.isHitActiveArea(mousedownX, mousedownY);
-      if (hitActiveArea) {
+      let hitArea = activeElement.isHitActiveArea(mousedownX, mousedownY);
+      if (hitArea) {
         // 按住了按住了激活状态的某个区域
         isAdjustmentElement = true;
-        alert(hitActiveArea);
+        hitActiveElementArea = hitArea;
+        activeElement.save();
       } else {
         // 否则进行激活元素的更新操作
         checkIsHitElement(mousedownX, mousedownY);
@@ -123,7 +127,33 @@ const renderAllElements = () => {
 };
 // 鼠标移动事件
 const onMousemove = (e) => {
-  if (!isMousedown || currentType.value === "selection") {
+  if (!isMousedown) {
+    return;
+  }
+  if (currentType.value === "selection") {
+    if (isAdjustmentElement) {
+      // 调整元素中
+      let ox = e.clientX - mousedownX;
+      let oy = e.clientY - mousedownY;
+      if (hitActiveElementArea === "body") {
+        // 进行移动操作
+        activeElement.moveBy(ox, oy);
+      } else if (hitActiveElementArea === "rotate") {
+        // 进行旋转操作
+        // 矩形的中心点
+        let center = getRectangleCenter(activeElement);
+        let or = getTowPointRotate(
+          center.x,
+          center.y,
+          mousedownX,
+          mousedownY,
+          e.clientX,
+          e.clientY
+        );
+        activeElement.rotateBy(or);
+      }
+      renderAllElements();
+    }
     return;
   }
   if (!activeElement) {
@@ -147,6 +177,10 @@ const onMouseup = (e) => {
   }
   mousedownX = 0;
   mousedownY = 0;
+  if (isAdjustmentElement) {
+    isAdjustmentElement = false;
+    hitActiveElementArea = "";
+  }
 };
 
 // 矩形类
@@ -154,15 +188,31 @@ class Rectangle {
   constructor(opt) {
     this.x = opt.x || 0;
     this.y = opt.y || 0;
+    // 记录矩形的初始位置
+    this.startX = 0;
+    this.startY = 0;
+    // 旋转角度
+    this.rotate = opt.rotate || 0;
+    // 记录矩形的初始角度
+    this.startRotate = 0;
     this.width = opt.width || 0;
     this.height = opt.height || 0;
     this.isActive = false;
   }
 
   render() {
+    ctx.save();
     let canvasPos = screenToCanvas(this.x, this.y);
-    drawRect(canvasPos.x, canvasPos.y, this.width, this.height);
+    // 将画布原点移动到自身的中心
+    let halfWidth = this.width / 2;
+    let halfHeight = this.height / 2;
+    ctx.translate(canvasPos.x + halfWidth, canvasPos.y + halfHeight);
+    // 旋转
+    ctx.rotate(degToRad(this.rotate));
+    // 原点变成自身中心，那么自身的坐标其实变成了-width/2、-height/2
+    drawRect(-halfWidth, -halfHeight, this.width, this.height);
     this.renderActiveState();
+    ctx.restore();
   }
 
   // 当激活时渲染激活态
@@ -170,10 +220,11 @@ class Rectangle {
     if (!this.isActive) {
       return;
     }
-    let canvasPos = screenToCanvas(this.x, this.y);
+    let halfWidth = this.width / 2;
+    let halfHeight = this.height / 2;
     // 为了不和矩形重叠，虚线框比矩形大一圈，增加5px的内边距
-    let x = canvasPos.x - 5;
-    let y = canvasPos.y - 5;
+    let x = -halfWidth - 5;
+    let y = -halfHeight - 5;
     let width = this.width + 10;
     let height = this.height + 10;
     // 主体的虚线框
@@ -200,6 +251,11 @@ class Rectangle {
 
   // 检测是否被击中
   isHit(x0, y0) {
+    // 反向旋转矩形的角度
+    let center = getRectangleCenter(this);
+    let rotatePoint = getRotatedPoint(x0, y0, center.x, center.y, -this.rotate);
+    x0 = rotatePoint.x;
+    y0 = rotatePoint.y;
     let { x, y, width, height } = this;
     // 矩形四条边的线段
     let segments = [
@@ -221,6 +277,11 @@ class Rectangle {
 
   // 检测是否击中了激活状态的某个区域
   isHitActiveArea(x0, y0) {
+    // 反向旋转矩形的角度
+    let center = getRectangleCenter(this);
+    let rotatePoint = getRotatedPoint(x0, y0, center.x, center.y, -this.rotate);
+    x0 = rotatePoint.x;
+    y0 = rotatePoint.y;
     let x = this.x - 5;
     let y = this.y - 5;
     let width = this.width + 10;
@@ -235,6 +296,24 @@ class Rectangle {
       // 在右下角操作手柄
       return "bottomRight";
     }
+  }
+
+  // 保存矩形此刻的状态
+  save() {
+    this.startX = this.x;
+    this.startY = this.y;
+    this.startRotate = this.rotate;
+  }
+
+  // 移动矩形
+  moveBy(ox, oy) {
+    this.x = this.startX + ox;
+    this.y = this.startY + oy;
+  }
+
+  // 旋转矩形
+  rotateBy(or) {
+    this.rotate = this.startRotate + or;
   }
 }
 
@@ -288,6 +367,40 @@ const checkIsAtSegment = (x, y, x1, y1, x2, y2, dis = 10) => {
 // 判断一个坐标是否在一个矩形内
 const checkPointIsInRectangle = (x, y, rx, ry, rw, rh) => {
   return x >= rx && x <= rx + rw && y >= ry && y <= ry + rh;
+};
+
+// 弧度转角度
+const radToDeg = (rad) => {
+  return rad * (180 / Math.PI);
+};
+
+// 角度转弧度
+const degToRad = (deg) => {
+  return deg * (Math.PI / 180);
+};
+
+// 计算两个坐标以同一个中心点构成的角度
+const getTowPointRotate = (cx, cy, tx, ty, fx, fy) => {
+  return radToDeg(Math.atan2(fy - cy, fx - cx) - Math.atan2(ty - cy, tx - cx));
+};
+
+// 计算矩形的中心点
+const getRectangleCenter = ({ x, y, width, height }) => {
+  return {
+    x: x + width / 2,
+    y: y + height / 2,
+  };
+};
+
+// 获取坐标经指定中心点旋转指定角度的坐标
+const getRotatedPoint = (x, y, cx, cy, rotate) => {
+  let deg = radToDeg(Math.atan2(y - cy, x - cx));
+  let del = deg + rotate;
+  let dis = getTowPointDistance(x, y, cx, cy);
+  return {
+    x: Math.cos(degToRad(del)) * dis + cx,
+    y: Math.sin(degToRad(del)) * dis + cy,
+  };
 };
 
 onMounted(() => {
