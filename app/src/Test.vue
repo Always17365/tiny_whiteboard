@@ -104,7 +104,7 @@ const onMousedown = (e) => {
         // 按住了按住了激活状态的某个区域
         isAdjustmentElement = true;
         hitActiveElementArea = hitArea;
-        activeElement.save();
+        activeElement.save(e, hitArea);
       } else {
         // 否则进行激活元素的更新操作
         checkIsHitElement(mousedownX, mousedownY);
@@ -151,6 +151,9 @@ const onMousemove = (e) => {
           e.clientY
         );
         activeElement.rotateBy(or);
+      } else if (hitActiveElementArea === 'bottomRight') {
+        // 进行伸缩操作
+        activeElement.stretch(e, hitActiveElementArea);
       }
       renderAllElements();
     }
@@ -198,6 +201,17 @@ class Rectangle {
     this.width = opt.width || 0;
     this.height = opt.height || 0;
     this.isActive = false;
+    // 伸缩时的属性
+    // 对角点坐标
+    this.diagonalPoint = {
+      x: 0,
+      y: 0,
+    };
+    // 鼠标按下位置和元素的角坐标的差值，因为我们是按住了拖拽手柄，这个按下的位置是和元素的角坐标存在一定距离的，所以为了不发生突变，需要记录一下这个差值
+    this.mousedownPosAndElementPosOffset = {
+      x: 0,
+      y: 0,
+    };
   }
 
   render() {
@@ -299,10 +313,33 @@ class Rectangle {
   }
 
   // 保存矩形此刻的状态
-  save() {
+  save(e, hitArea) {
     this.startX = this.x;
     this.startY = this.y;
     this.startRotate = this.rotate;
+    if (hitArea === "bottomRight") {
+      // 矩形的中心点坐标
+      let centerPos = getRectangleCenter(this);
+      // 矩形右下角的坐标
+      let pos = {
+        x: this.x + this.width,
+        y: this.y + this.height,
+      };
+      // 如果元素旋转了，那么右下角坐标也要相应的旋转
+      let rotatedPos = getRotatedPoint(
+        pos.x,
+        pos.y,
+        centerPos.x,
+        centerPos.y,
+        this.rotate
+      );
+      // 计算对角点的坐标
+      this.diagonalPoint.x = 2 * centerPos.x - rotatedPos.x;
+      this.diagonalPoint.y = 2 * centerPos.y - rotatedPos.y;
+      // 计算鼠标按下位置和元素的左上角坐标差值
+      this.mousedownPosAndElementPosOffset.x = e.clientX - rotatedPos.x;
+      this.mousedownPosAndElementPosOffset.y = e.clientY - rotatedPos.y;
+    }
   }
 
   // 移动矩形
@@ -314,6 +351,34 @@ class Rectangle {
   // 旋转矩形
   rotateBy(or) {
     this.rotate = this.startRotate + or;
+  }
+
+  // 伸缩
+  stretch(e, hitArea) {
+    //鼠标当前的坐标减去偏移量得到矩形的这个角的坐标
+    let actClientX = e.clientX - this.mousedownPosAndElementPosOffset.x;
+    let actClientY = e.clientY - this.mousedownPosAndElementPosOffset.y;
+    // 新的中心点
+    let newCenter = {
+      x: (actClientX + this.diagonalPoint.x) / 2,
+      y: (actClientY + this.diagonalPoint.y) / 2,
+    };
+    // 获取新的角坐标经新的中心点反向旋转元素的角度后的坐标，得到矩形未旋转前的这个角坐标
+    let rp = getRotatedPoint(
+      actClientX,
+      actClientY,
+      newCenter.x,
+      newCenter.y,
+      -this.rotate
+    );
+    if (hitArea === "bottomRight") {
+      // 计算新的大小
+      this.width = (rp.x - newCenter.x) * 2;
+      this.height = (rp.y - newCenter.y) * 2;
+      // 计算新的位置
+      this.x = rp.x - this.width;
+      this.y = rp.y - this.height;
+    }
   }
 }
 
