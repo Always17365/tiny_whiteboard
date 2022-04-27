@@ -7,11 +7,25 @@
         <el-radio-button label="rectangle">矩形</el-radio-button>
       </el-radio-group>
     </div>
+    <div class="footerLeft" @click.stop>
+      <!-- 缩放 -->
+      <div class="blockBox">
+        <el-tooltip effect="light" content="缩小" placement="top">
+          <el-button :icon="ZoomOut" circle @click="zoomOut" />
+        </el-tooltip>
+        <el-tooltip effect="light" content="放大" placement="top">
+          <el-button :icon="ZoomIn" circle @click="zoomIn" />
+        </el-tooltip>
+        <el-button @click="exportImg">导出</el-button>
+        <el-button @click="deleteActiveElement">删除</el-button>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { onMounted, ref } from "vue";
+import { ZoomIn, ZoomOut } from "@element-plus/icons-vue";
 
 // 初始化画布
 const container = ref(null);
@@ -50,6 +64,7 @@ const bindEvent = () => {
   canvas.value.addEventListener("mousedown", onMousedown);
   canvas.value.addEventListener("mousemove", onMousemove);
   canvas.value.addEventListener("mouseup", onMouseup);
+  canvas.value.addEventListener("mousewheel", onMousewheel);
 };
 // 屏幕坐标转画布坐标
 const screenToCanvas = (x, y) => {
@@ -58,11 +73,22 @@ const screenToCanvas = (x, y) => {
     y: y - canvas.value.height / 2,
   };
 };
+// 画布坐标转成屏幕坐标
+const canvasToScreen = (x, y) => {
+  return {
+    x: x + canvas.value.width / 2,
+    y: y + canvas.value.height / 2,
+  };
+};
 let mousedownX = 0;
 let mousedownY = 0;
 let isMousedown = false;
 // 当前操作模式
 const currentType = ref("selection");
+// 当前滚动值
+let scrollY = 0;
+// 当前缩放值
+let scale = 1;
 // 当前是否正在调整元素
 let isAdjustmentElement = false;
 // 当前按住了激活元素激活态的哪个区域
@@ -92,25 +118,36 @@ const checkIsHitElement = (x, y) => {
 };
 // 鼠标按下事件
 const onMousedown = (e) => {
-  mousedownX = e.clientX;
-  mousedownY = e.clientY;
+  // 处理缩放
+  let canvasClient = screenToCanvas(e.clientX, e.clientY); // 屏幕坐标转成画布坐标
+  let _clientX = canvasClient.x / scale; // 缩小画布的缩放值
+  let _clientY = canvasClient.y / scale;
+  let screenClient = canvasToScreen(_clientX, _clientY); // 画布坐标转回屏幕坐标
+  // 处理滚动
+  _clientX = screenClient.x;
+  _clientY = screenClient.y + scrollY;
+  // 吸附到网格
+  let gridClientX = _clientX - (_clientX % 20);
+  let gridClientY = _clientY - (_clientY % 20);
+  mousedownX = gridClientX;
+  mousedownY = gridClientY;
   isMousedown = true;
   if (currentType.value === "selection") {
     // 选择模式下进行元素激活检测
     if (activeElement) {
       // 当前存在激活元素则判断是否按住了激活状态的某个区域
-      let hitArea = activeElement.isHitActiveArea(mousedownX, mousedownY);
+      let hitArea = activeElement.isHitActiveArea(_clientX, _clientY);
       if (hitArea) {
         // 按住了按住了激活状态的某个区域
         isAdjustmentElement = true;
         hitActiveElementArea = hitArea;
-        activeElement.save(e, hitArea);
+        activeElement.save(gridClientX, gridClientY, hitArea);
       } else {
         // 否则进行激活元素的更新操作
-        checkIsHitElement(mousedownX, mousedownY);
+        checkIsHitElement(_clientX, _clientY);
       }
     } else {
-      checkIsHitElement(mousedownX, mousedownY);
+      checkIsHitElement(_clientX, _clientY);
     }
   }
 };
@@ -121,20 +158,74 @@ let allElements = [];
 // 渲染所有元素
 const renderAllElements = () => {
   clearCanvas();
+  ctx.save();
+  // 整体缩放
+  ctx.scale(scale, scale);
+  renderGrid();
   allElements.forEach((element) => {
     element.render();
   });
+  ctx.restore();
+};
+// 渲染网格
+const renderGrid = () => {
+  ctx.save();
+  ctx.strokeStyle = "#dfe0e1";
+  let width = canvas.value.width;
+  let height = canvas.value.height;
+  // 水平线
+  for (let i = -height / 2; i < height / 2; i += 20) {
+    drawHorizontalLine(i);
+  }
+  // 向下滚时绘制上方超出部分的水平线
+  for (let i = -height / 2 - 20; i > -height / scale / 2 + scrollY; i -= 20) {
+    drawHorizontalLine(i);
+  }
+  // 垂直线
+  for (let i = -width / 2; i < width / 2; i += 20) {
+    drawVerticalLine(i);
+  }
+  ctx.restore();
+};
+// 绘制网格水平线
+const drawHorizontalLine = (i) => {
+  let width = canvas.value.width;
+  // 不要忘了绘制网格也需要减去滚动值
+  let _i = i - scrollY;
+  ctx.beginPath();
+  ctx.moveTo(-width / scale / 2, _i);
+  ctx.lineTo(width / scale / 2, _i);
+  ctx.stroke();
+};
+// 绘制网格垂直线
+const drawVerticalLine = (i) => {
+  let height = canvas.value.height;
+  ctx.beginPath();
+  ctx.moveTo(i, -height / scale / 2);
+  ctx.lineTo(i, height / scale / 2);
+  ctx.stroke();
 };
 // 鼠标移动事件
 const onMousemove = (e) => {
   if (!isMousedown) {
     return;
   }
+  // 处理缩放
+  let canvasClient = screenToCanvas(e.clientX, e.clientY); // 屏幕坐标转成画布坐标
+  let _clientX = canvasClient.x / scale; // 缩小画布的缩放值
+  let _clientY = canvasClient.y / scale;
+  let screenClient = canvasToScreen(_clientX, _clientY); // 画布坐标转回屏幕坐标
+  // 处理滚动
+  _clientX = screenClient.x;
+  _clientY = screenClient.y + scrollY;
+  // 吸附到网格
+  let gridClientX = _clientX - (_clientX % 20);
+  let gridClientY = _clientY - (_clientY % 20);
   if (currentType.value === "selection") {
     if (isAdjustmentElement) {
       // 调整元素中
-      let ox = e.clientX - mousedownX;
-      let oy = e.clientY - mousedownY;
+      let ox = gridClientX - mousedownX;
+      let oy = gridClientY - mousedownY;
       if (hitActiveElementArea === "body") {
         // 进行移动操作
         activeElement.moveBy(ox, oy);
@@ -147,13 +238,13 @@ const onMousemove = (e) => {
           center.y,
           mousedownX,
           mousedownY,
-          e.clientX,
-          e.clientY
+          gridClientX,
+          gridClientY
         );
         activeElement.rotateBy(or);
-      } else if (hitActiveElementArea === 'bottomRight') {
+      } else if (hitActiveElementArea === "bottomRight") {
         // 进行伸缩操作
-        activeElement.stretch(e, hitActiveElementArea);
+        activeElement.stretch(gridClientX, gridClientY, hitActiveElementArea);
       }
       renderAllElements();
     }
@@ -167,8 +258,8 @@ const onMousemove = (e) => {
     allElements.push(activeElement);
   }
   // 更新矩形的大小
-  activeElement.width = e.clientX - mousedownX;
-  activeElement.height = e.clientY - mousedownY;
+  activeElement.width = gridClientX - mousedownX;
+  activeElement.height = gridClientY - mousedownY;
   // 渲染所有的元素
   renderAllElements();
 };
@@ -184,6 +275,28 @@ const onMouseup = (e) => {
     isAdjustmentElement = false;
     hitActiveElementArea = "";
   }
+};
+// 鼠标移动事件
+const onMousewheel = (e) => {
+  if (e.wheelDelta < 0) {
+    // 向下滚动
+    scrollY += 50;
+  } else {
+    // 向上滚动
+    scrollY -= 50;
+  }
+  renderAllElements();
+};
+// 放大
+const zoomIn = () => {
+  scale += 0.1;
+  renderAllElements();
+};
+
+// 缩小
+const zoomOut = () => {
+  scale -= 0.1;
+  renderAllElements();
 };
 
 // 矩形类
@@ -216,7 +329,9 @@ class Rectangle {
 
   render() {
     ctx.save();
-    let canvasPos = screenToCanvas(this.x, this.y);
+    let _x = this.x;
+    let _y = this.y - scrollY;
+    let canvasPos = screenToCanvas(_x, _y);
     // 将画布原点移动到自身的中心
     let halfWidth = this.width / 2;
     let halfHeight = this.height / 2;
@@ -313,7 +428,7 @@ class Rectangle {
   }
 
   // 保存矩形此刻的状态
-  save(e, hitArea) {
+  save(clientX, clientY, hitArea) {
     this.startX = this.x;
     this.startY = this.y;
     this.startRotate = this.rotate;
@@ -337,8 +452,8 @@ class Rectangle {
       this.diagonalPoint.x = 2 * centerPos.x - rotatedPos.x;
       this.diagonalPoint.y = 2 * centerPos.y - rotatedPos.y;
       // 计算鼠标按下位置和元素的左上角坐标差值
-      this.mousedownPosAndElementPosOffset.x = e.clientX - rotatedPos.x;
-      this.mousedownPosAndElementPosOffset.y = e.clientY - rotatedPos.y;
+      this.mousedownPosAndElementPosOffset.x = clientX - rotatedPos.x;
+      this.mousedownPosAndElementPosOffset.y = clientY - rotatedPos.y;
     }
   }
 
@@ -354,10 +469,10 @@ class Rectangle {
   }
 
   // 伸缩
-  stretch(e, hitArea) {
+  stretch(clientX, clientY, hitArea) {
     //鼠标当前的坐标减去偏移量得到矩形的这个角的坐标
-    let actClientX = e.clientX - this.mousedownPosAndElementPosOffset.x;
-    let actClientY = e.clientY - this.mousedownPosAndElementPosOffset.y;
+    let actClientX = clientX - this.mousedownPosAndElementPosOffset.x;
+    let actClientY = clientY - this.mousedownPosAndElementPosOffset.y;
     // 新的中心点
     let newCenter = {
       x: (actClientX + this.diagonalPoint.x) / 2,
@@ -468,9 +583,147 @@ const getRotatedPoint = (x, y, cx, cy, rotate) => {
   };
 };
 
+// 获取多个元素的最外层包围框信息
+const getMultiElementRectInfo = (elementList = []) => {
+  if (elementList.length <= 0) {
+    return {
+      minx: 0,
+      maxx: 0,
+      miny: 0,
+      maxy: 0,
+    };
+  }
+  let minx = Infinity;
+  let maxx = -Infinity;
+  let miny = Infinity;
+  let maxy = -Infinity;
+  elementList.forEach((element) => {
+    let pointList = getElementCorners(element);
+    pointList.forEach(({ x, y }) => {
+      if (x < minx) {
+        minx = x;
+      }
+      if (x > maxx) {
+        maxx = x;
+      }
+      if (y < miny) {
+        miny = y;
+      }
+      if (y > maxy) {
+        maxy = y;
+      }
+    });
+  });
+  return {
+    minx,
+    maxx,
+    miny,
+    maxy,
+  };
+};
+// 获取元素的四个角的坐标，应用了旋转之后的
+const getElementCorners = (element) => {
+  // 左上角
+  let topLeft = getElementRotatedCornerPoint(element, "topLeft");
+  // 右上角
+  let topRight = getElementRotatedCornerPoint(element, "topRight");
+  // 左下角
+  let bottomLeft = getElementRotatedCornerPoint(element, "bottomLeft");
+  // 右下角
+  let bottomRight = getElementRotatedCornerPoint(element, "bottomRight");
+  return [topLeft, topRight, bottomLeft, bottomRight];
+};
+// 获取元素旋转后的四个角坐标
+const getElementRotatedCornerPoint = (element, dir) => {
+  // 元素中心点
+  let center = getRectangleCenter(element);
+  // 元素的某个角坐标
+  let dirPos = getElementCornerPoint(element, dir);
+  // 旋转元素的角度
+  return getRotatedPoint(
+    dirPos.x,
+    dirPos.y,
+    center.x,
+    center.y,
+    element.rotate
+  );
+};
+// 获取元素的四个角坐标
+const getElementCornerPoint = (element, dir) => {
+  let { x, y, width, height } = element;
+  switch (dir) {
+    case "topLeft":
+      return {
+        x,
+        y,
+      };
+    case "topRight":
+      return {
+        x: x + width,
+        y,
+      };
+    case "bottomRight":
+      return {
+        x: x + width,
+        y: y + height,
+      };
+    case "bottomLeft":
+      return {
+        x,
+        y: y + height,
+      };
+    default:
+      break;
+  }
+};
+// 导出为图片
+const exportImg = () => {
+  // 计算所有元素的外包围框信息
+  let { minx, maxx, miny, maxy } = getMultiElementRectInfo(allElements);
+  let width = maxx - minx;
+  let height = maxy - miny;
+  // 替换之前的canvas
+  canvas.value = document.createElement("canvas");
+  canvas.value.style.cssText = `
+    position: absolute;
+    left: 0;
+    top: 0;
+    border: 1px solid red;
+    background-color: #fff;
+  `;
+  canvas.value.width = width;
+  canvas.value.height = height;
+  document.body.appendChild(canvas.value);
+  // 替换之前的绘图上下文
+  ctx = canvas.value.getContext("2d");
+  // 画布原点移动到画布中心
+  ctx.translate(canvas.value.width / 2, canvas.value.height / 2);
+  // 将滚动值恢复成0，因为在新画布上并不涉及到滚动，所有元素距离有多远我们就会创建一个有多大的画布
+  scrollY = 0;
+  // 渲染所有元素
+  allElements.forEach((element) => {
+    // 这里为什么要减去minx、miny呢，因为比如最左上角矩形的坐标为(100,100)，所以min、miny计算出来就是100、100，而它在我们的新画布上绘制时应该刚好也是要绘制到左上角的，坐标应该为0,0才对，所以所有的元素坐标均需要减去minx、miny
+    element.x -= minx;
+    element.y -= miny;
+    element.render();
+  });
+};
+// 删除激活元素
+const deleteActiveElement = () => {
+  if (!activeElement) {
+    return;
+  }
+  let index = allElements.findIndex((element) => {
+    return element === activeElement;
+  });
+  allElements.splice(index, 1);
+  renderAllElements();
+};
+
 onMounted(() => {
   initCanvas();
   bindEvent();
+  renderAllElements();
 });
 </script>
 
@@ -500,6 +753,22 @@ onMounted(() => {
     z-index: 2;
     display: flex;
     justify-content: center;
+  }
+
+  .footerLeft {
+    position: absolute;
+    left: 10px;
+    bottom: 10px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+
+    .blockBox {
+      height: 100%;
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+    }
   }
 }
 </style>
